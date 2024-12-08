@@ -918,6 +918,230 @@ def merge_asof(
     )
     return op.get_result()
 
+class _MergePlan:
+    merge_dataframes: list[_MergeDataFrame]
+    merge_predicates: dict[tuple[str, str], _MergePredicate]
+
+    left_index: bool
+    right_index: bool
+    sort: bool
+    lsuffix: str | None
+    indicator: str | bool
+    validate: str | None
+    join_names: list[Hashable]
+    right_join_keys: list[ArrayLike]
+    left_join_keys: list[ArrayLike]
+
+    def __init__(
+        self,
+        df: DataFrame | Series,
+        # how: JoinHow | Literal["asof"] = "inner",
+        # on: IndexLabel | AnyArrayLike | None = None,
+        # left_on: IndexLabel | AnyArrayLike | None = None,
+        # right_on: IndexLabel | AnyArrayLike | None = None,
+        sort: bool = False,
+        alias: str | None = "1",
+        indicator: str | bool = False,
+        validate: str | None = None,
+    ) -> _MergePlan:
+        self.merge_dataframes = []
+        self.merge_predicates = {}
+        _df = _validate_operand(df)
+        self.df = self.orig_df = _df
+        self.how = "inner"
+
+        # self.on = com.maybe_make_list(left_on)
+
+        self.sort = sort or self.how == "outer"
+        self.alias = alias
+
+        self.indicator = indicator
+
+        merge_type = {"left", "right", "inner", "outer", "cross", "asof"}
+        if self.how not in merge_type:
+            raise ValueError(
+                f"'{self.how}' is not a valid Merge type: "
+                f"left, right, inner, outer, cross, asof"
+            )
+
+        # If argument passed to validate,
+        # check if columns specified as unique
+        # are in fact unique.
+        if validate is not None:
+            self._validate_validate_kwd(validate)
+
+        df = df.add_suffix(f"_{alias}")
+        
+
+        self.merge_dataframes.append(_MergeDataFrame(
+            df=df,
+            # how="inner",
+            # left_on=left_on,
+            # right_on=right_on,
+            # left_alias=alias,
+            alias=alias,
+            # left_index=False,
+            # right_index=False,
+            sort=sort,
+            indicator=indicator,
+            validate=validate,
+        ))
+
+    def add_merge(
+        self,
+        other: DataFrame | Series,
+        alias: str | None = None,
+        left_alias: str | None = None,
+        how: JoinHow | Literal["asof"] = "inner",
+        # on: IndexLabel | AnyArrayLike | None = None,
+        left_on: IndexLabel | AnyArrayLike | None = None,
+        right_on: IndexLabel | AnyArrayLike | None = None,
+        left_index: bool = False,
+        right_index: bool = False,
+        sort: bool = False,
+        indicator: str | bool = False, # TODO n-d indicator for each table in merge
+        validate: str | None = None,
+    ) -> _MergePlan:
+
+        # TODO if left_alias is None
+        assert left_alias is not None
+        assert alias is not None
+        # TODO assert left_alias exists
+
+        other = other.add_suffix(f"_{alias}")
+
+        mergeOp = _MergeDataFrame(
+            df=other,
+            alias=alias,
+            sort=sort,
+            indicator=indicator,
+            validate=validate,
+        )
+
+        mergePred = _MergePredicate(
+            how=how,
+            left_alias=left_alias,
+            right_alias=alias,
+            left_on=left_on,
+            right_on=right_on,
+            left_index=left_index,
+            right_index=right_index,
+            validate=validate,
+        )
+
+        self.merge_dataframes.append(mergeOp)
+        self.merge_predicates[left_alias, alias] = mergePred
+        return self
+
+    def _optimize_merge(self) -> None:
+        pass
+
+    def execute_merge_plan(self) -> DataFrame:
+        # print("dfs")
+        # print(self.merge_dataframes)
+        # print("preds")
+        # print(self.merge_predicates)
+        self._optimize_merge()
+        dataFrames: dict[str, DataFrame] = {}
+        start_merge_df = self.merge_dataframes[0]
+        start_merge_alias = start_merge_df.alias
+        dataFrames[start_merge_alias] = start_merge_df.df
+        merged_aliases: set[str] = {start_merge_alias}
+        running_df = start_merge_df.df
+        for merge_df in self.merge_dataframes[1:]:
+            predicate: _MergePredicate = None
+            new_is_right = False
+            for merged_alias in merged_aliases:
+                predicate1 = self.merge_predicates.get((merged_alias, merge_df.alias), None)
+                predicate2 = self.merge_predicates.get((merge_df.alias, merged_alias), None)
+                if predicate1 is not None:
+                    del self.merge_predicates[merged_alias, merge_df.alias]
+                    new_is_right = True
+                    predicate = predicate1
+                    break
+                if predicate2 is not None:
+                    del self.merge_predicates[merge_df.alias, merged_alias]
+                    predicate = predicate2
+                    break
+
+            assert predicate is not None
+            merged_aliases.add(merge_df.alias)
+
+            dataFrames[merge_df.alias] = merge_df.df
+
+            left_alias = merged_alias
+            right_alias = merge_df.alias
+            if not new_is_right:
+                right_alias, left_alias = left_alias, right_alias
+
+            left_df = dataFrames[left_alias]
+            right_df = dataFrames[right_alias]
+            if new_is_right:
+                left_df = running_df
+            else:
+                right_df = running_df
+
+            left_on=f"{predicate.left_on}_{left_alias}",
+            right_on=f"{predicate.right_on}_{right_alias}",
+
+            if predicate.left_index:
+                left_on = None
+            if predicate.right_index:
+                right_on = None
+
+            print(left_alias)
+            print(right_alias)
+
+
+            op = _MergeOperation(
+                left=left_df,
+                right=right_df,
+                how=predicate.how,
+                left_on=left_on,
+                right_on=right_on,
+                left_index=predicate.left_index,
+                right_index=predicate.right_index,
+                # sort=predicate.sort, # TODO
+                suffixes=('', ''),
+                # indicator=merge_df.indicator,
+                validate=predicate.validate,
+            )
+            running_df = op.get_result()
+            # TODO decide which one is deleted
+            # dataFrames[merge_df.left_alias] = df
+            # del dataFrames[merge_df.right_alias]
+
+        # assert len(dataFrames) == 1
+        # return next(iter(dataFrames.values()))
+        assert len(self.merge_predicates) == 0
+        return running_df
+
+
+from dataclasses import dataclass
+@dataclass
+class _MergeDataFrame:
+    df: DataFrame | Series
+    # how: JoinHow | Literal["asof"] = "inner"
+    # left_on: IndexLabel | AnyArrayLike | None = None
+    # right_on: IndexLabel | AnyArrayLike | None = None
+    # left_alias: str | None = None
+    alias: str | None = None
+    # left_index: bool = False
+    # right_index: bool = False
+    sort: bool = True
+    indicator: str | bool = False
+    validate: str | None = None
+
+@dataclass
+class _MergePredicate:
+    how: JoinHow = "inner"
+    left_alias: str | None = None
+    right_alias: str | None = None
+    left_on: IndexLabel | AnyArrayLike | None = None
+    right_on: IndexLabel | AnyArrayLike | None = None
+    left_index: bool = False 
+    right_index: bool = False
+    validate: str | None = None
 
 # TODO: transformations??
 class _MergeOperation:
