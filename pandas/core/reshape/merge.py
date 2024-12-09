@@ -10,6 +10,7 @@ from collections.abc import (
 )
 import datetime
 from functools import partial
+from itertools import combinations
 from typing import (
     TYPE_CHECKING,
     Literal,
@@ -1034,7 +1035,78 @@ class _MergePlan:
         return self
 
     def _optimize_merge(self) -> None:
-        pass
+        dataframes = self.merge_dataframes
+        init_order = [dataframe.alias for dataframe in dataframes]
+        print(init_order)
+        alias_map = {dataframe.alias: dataframe for dataframe in dataframes}
+        cardinality_map = {(dataframe.alias,): len(dataframe.df) for dataframe in dataframes}
+        cardinality_map[()] = 1
+        names = alias_map.keys()
+
+        def cost_of_join(left, right):
+            a = 1.7434 * (10**-7)
+            b = 3.2652 * (10**-7)
+            c = -0.4296
+            return a * get_cardinality(left) + b * cardinality_map[right] + c
+        
+        def get_cardinality(order):
+            if order in cardinality_map:
+                return cardinality_map[order]
+            left = order[:-1]
+            right = (order[-1],)
+            # for now divide by 10, should use pkey fkey selectivity 
+            result = get_cardinality(left) * cardinality_map[right] / 10
+            cardinality_map[order] = result
+            return result
+
+        # maps key to tuple containing cost and a list representing order to do the joins
+        opt_costs = {():(0,())}
+
+        # initialize value of accessing single tables
+        for i, dataframe in enumerate(names):
+            opt_costs[(dataframe,)] = (0,(dataframe,))
+
+        num_dataframes = len(dataframes)
+        for size in range(1, num_dataframes+1):
+            subsets = combinations(names, size)
+            for subset in subsets:
+                subset_key = tuple(sorted(subset))
+                opt_cost = float('inf')
+                opt_join = None
+                for i, a in enumerate(subset):
+                    s_minus_a = subset[:i] + subset[i+1:]
+                    s_minus_a_key = tuple(sorted(s_minus_a)) # sorted tuple as key to represent subset of dataframes
+                    predicates = self.merge_predicates
+                    found = False
+                    for a1, a2 in predicates:
+                        if (not found) and a1 == a:
+                            for a3 in s_minus_a_key:
+                                if a3 == a2:
+                                    found = True
+                                    break
+                        elif (not found) and a2 == a:
+                            for a3 in s_minus_a_key:
+                                if a3 == a1:
+                                    found = True
+                                    break
+                        elif found:
+                            break
+                    if not found or s_minus_a_key not in opt_costs:
+                        continue
+                    join_s_minus_a = opt_costs[s_minus_a_key][1]
+                    join_cost = cost_of_join(join_s_minus_a, (a,))
+                    if join_cost < opt_cost:
+                        opt_cost = join_cost
+                        opt_join = join_s_minus_a + (a,)
+                        opt_costs[subset_key] = (opt_cost, opt_join)
+    
+        order = opt_costs[tuple(sorted(names))][1]
+        new_dataframes = [alias_map[alias] for alias in order]
+        print(order)
+        for k,v in opt_costs.items():
+            print(k, v)
+        self.merge_dataframes = new_dataframes
+
 
     def execute_merge_plan(self) -> DataFrame:
         # print("dfs")
@@ -1101,6 +1173,7 @@ class _MergePlan:
                 right_on=right_on,
                 left_index=predicate.left_index,
                 right_index=predicate.right_index,
+                sort = False,
                 # sort=predicate.sort, # TODO
                 suffixes=('', ''),
                 # indicator=merge_df.indicator,
