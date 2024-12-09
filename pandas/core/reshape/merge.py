@@ -1047,9 +1047,27 @@ class _MergePlan:
             if order in cardinality_map:
                 return cardinality_map[order]
             left = order[:-1]
-            right = (order[-1],)
-            # for now divide by 10, should use pkey fkey selectivity 
-            result = get_cardinality(left) * cardinality_map[right] / 10
+            right_alias = order[-1]
+
+            selectivity = 0.1
+
+            for left_alias in left[::-1]:
+                if (left_alias, right_alias) in self.merge_predicates:
+                    predicate = self.merge_predicates[(left_alias, right_alias)]
+                    rcolumn = predicate.right_on + "_" + right_alias
+                    df = alias_map[right_alias].df
+                    if df.index.is_unique and df.index.name == rcolumn and not df.index.isna().any():
+                        selectivity = 1 / len(df.index)
+                        break
+                elif (right_alias, left_alias) in self.merge_predicates:
+                    predicate = self.merge_predicates[(right_alias, left_alias)]
+                    rcolumn = predicate.left_on
+                    df = alias_map[right_alias].df
+                    if df.index.is_unique and df.index.name == rcolumn and not df.index.isna().any():
+                        selectivity = 1 / len(df.index)
+                        break
+            right = (right_alias,)
+            result = get_cardinality(left) * cardinality_map[right] * selectivity
             cardinality_map[order] = result
             return result
 
