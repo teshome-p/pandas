@@ -10745,6 +10745,7 @@ class DataFrame(NDFrame, OpsMixin):
             )
         else:
             if on is not None:
+                # DB TODO check if list of column names to join on here
                 raise ValueError(
                     "Joining multiple DataFrames only supported for joining on index"
                 )

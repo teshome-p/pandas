@@ -972,17 +972,11 @@ class _MergePlan:
             self._validate_validate_kwd(validate)
 
         df = df.add_suffix(f"_{alias}")
-        
+        df.index.set_names([name + f"_{alias}" for name in df.index.names], inplace=True)
 
         self.merge_dataframes.append(_MergeDataFrame(
             df=df,
-            # how="inner",
-            # left_on=left_on,
-            # right_on=right_on,
-            # left_alias=alias,
             alias=alias,
-            # left_index=False,
-            # right_index=False,
             sort=sort,
             indicator=indicator,
             validate=validate,
@@ -994,7 +988,6 @@ class _MergePlan:
         alias: str | None = None,
         left_alias: str | None = None,
         how: JoinHow | Literal["asof"] = "inner",
-        # on: IndexLabel | AnyArrayLike | None = None,
         left_on: IndexLabel | AnyArrayLike | None = None,
         right_on: IndexLabel | AnyArrayLike | None = None,
         left_index: bool = False,
@@ -1010,6 +1003,7 @@ class _MergePlan:
         # TODO assert left_alias exists
 
         other = other.add_suffix(f"_{alias}")
+        other.index.set_names([name + f"_{alias}" for name in other.index.names], inplace=True)
 
         mergeOp = _MergeDataFrame(
             df=other,
@@ -1180,12 +1174,7 @@ class _MergePlan:
                 validate=predicate.validate,
             )
             running_df = op.get_result()
-            # TODO decide which one is deleted
-            # dataFrames[merge_df.left_alias] = df
-            # del dataFrames[merge_df.right_alias]
 
-        # assert len(dataFrames) == 1
-        # return next(iter(dataFrames.values()))
         assert len(self.merge_predicates) == 0
         return running_df
 
