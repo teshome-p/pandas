@@ -1030,32 +1030,34 @@ class _MergePlan:
 
     def _optimize_merge(self) -> None:
         dataframes = self.merge_dataframes
-        init_order = [dataframe.alias for dataframe in dataframes]
-        print(init_order)
+        names = [dataframe.alias for dataframe in dataframes]
+        # print(f"Initial Merge Order: {names}")
         alias_map = {dataframe.alias: dataframe for dataframe in dataframes}
         cardinality_map = {(dataframe.alias,): len(dataframe.df) for dataframe in dataframes}
         cardinality_map[()] = 1
-        names = alias_map.keys()
 
-        def cost_of_join(left, right):
+        def cost_of_hash_join(left, right):
             a = 1.7434 * (10**-7)
             b = 3.2652 * (10**-7)
             c = -0.4296
-            return a * get_cardinality(left) + b * cardinality_map[right] + c
+            return max(a * get_cardinality(left) + b * cardinality_map[right] + c, 0)
         
         def get_cardinality(order):
             if order in cardinality_map:
                 return cardinality_map[order]
+        
             left = order[:-1]
             right_alias = order[-1]
-
             selectivity = 0.1
 
+            # find a predicate where right alias is a primary key
+            # if there are multiple, prefer the most recent left alias added to the join
             for left_alias in left[::-1]:
                 if (left_alias, right_alias) in self.merge_predicates:
                     predicate = self.merge_predicates[(left_alias, right_alias)]
                     rcolumn = predicate.right_on + "_" + right_alias
                     df = alias_map[right_alias].df
+                    # approximation of a df[rcolumn].is_primary_key check
                     if df.index.is_unique and df.index.name == rcolumn and not df.index.isna().any():
                         selectivity = 1 / len(df.index)
                         break
@@ -1066,15 +1068,17 @@ class _MergePlan:
                     if df.index.is_unique and df.index.name == rcolumn and not df.index.isna().any():
                         selectivity = 1 / len(df.index)
                         break
+
             right = (right_alias,)
             result = get_cardinality(left) * cardinality_map[right] * selectivity
             cardinality_map[order] = result
             return result
 
-        # maps key to tuple containing cost and a list representing order to do the joins
+        # maps key to tuple containing cost and a tuple representing order to do the joins
+        # for example, (A,B,C) to (40, (C,B,A)) means the best join order was join(join(C,B),A)
         opt_costs = {():(0,())}
 
-        # initialize value of accessing single tables
+        # initialize value of accessing single tables: 0 because already in memory
         for i, dataframe in enumerate(names):
             opt_costs[(dataframe,)] = (0,(dataframe,))
 
@@ -1082,41 +1086,51 @@ class _MergePlan:
         for size in range(1, num_dataframes+1):
             subsets = combinations(names, size)
             for subset in subsets:
-                subset_key = tuple(sorted(subset))
+                subset_key = tuple(sorted(subset)) # sorted tuple as key to represent subset of dataframes
                 opt_cost = float('inf')
                 opt_join = None
                 for i, a in enumerate(subset):
                     s_minus_a = subset[:i] + subset[i+1:]
-                    s_minus_a_key = tuple(sorted(s_minus_a)) # sorted tuple as key to represent subset of dataframes
+                    s_minus_a_key = tuple(sorted(s_minus_a))
+
                     predicates = self.merge_predicates
-                    found = False
+                    # look for a predicate that goes from "a" to anything in s_minus_a
+                    found_column_match= False
                     for a1, a2 in predicates:
-                        if (not found) and a1 == a:
+                        if (not found_column_match) and a1 == a:
                             for a3 in s_minus_a_key:
                                 if a3 == a2:
-                                    found = True
+                                    found_column_match = True
                                     break
-                        elif (not found) and a2 == a:
+                        elif (not found_column_match) and a2 == a:
                             for a3 in s_minus_a_key:
                                 if a3 == a1:
-                                    found = True
+                                    found_column_match = True
                                     break
-                        elif found:
+                        elif found_column_match:
                             break
-                    if not found or s_minus_a_key not in opt_costs:
+                    # if this order or the s_minus_a order would have required a cartesian product
+                    # due to the lack of matching join columns, skip bc unoptimal
+                    if not found_column_match or s_minus_a_key not in opt_costs:
                         continue
+
                     join_s_minus_a = opt_costs[s_minus_a_key][1]
-                    join_cost = cost_of_join(join_s_minus_a, (a,))
+                    join_cost = cost_of_hash_join(join_s_minus_a, (a,))
+                    #print(s_minus_a_key, a, join_cost)
                     if join_cost < opt_cost:
                         opt_cost = join_cost
                         opt_join = join_s_minus_a + (a,)
                         opt_costs[subset_key] = (opt_cost, opt_join)
     
-        order = opt_costs[tuple(sorted(names))][1]
-        new_dataframes = [alias_map[alias] for alias in order]
-        print(order)
-        for k,v in opt_costs.items():
-            print(k, v)
+        new_cost, new_order = opt_costs[tuple(sorted(names))]
+        old_cost = cost_of_hash_join(tuple(names[:-1]), (names[-1],))
+        new_dataframes = [alias_map[alias] for alias in new_order]
+
+        # print(f"Optimal Order: {new_order}")
+        # print(f"New Cost: {new_cost}")
+        # print(f"Old Cost: {old_cost}")
+        # for k,v in opt_costs.items():
+        #     print(k, v)
         self.merge_dataframes = new_dataframes
 
     def _check_merge_plan(self, plan: list[str]) -> None:
@@ -1203,8 +1217,8 @@ class _MergePlan:
             if predicate.right_index:
                 right_on = None
 
-            print(left_alias)
-            print(right_alias)
+            # print(left_alias)
+            # print(right_alias)
 
             left_df = left_df.reset_index()
             right_df = right_df.reset_index()

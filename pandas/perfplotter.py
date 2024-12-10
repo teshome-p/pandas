@@ -2,8 +2,9 @@ import numpy as np
 import pandas as pd
 import perfplot
 
-df1_sizes = [100_000, 1_000_000, 5_000_000, 7_500_000, 10_000_000]
-df2_sizes = [100_000, 1_000_000, 5_000_000, 7_500_000, 10_000_000]
+sizes = [10_000, 100_000, 1_000_000, 3_000_000, 5_000_000, 7_000_000, 9_000_000]
+df1_sizes = sizes
+df2_sizes = sizes
 
 def plot_hash_vs_merge(df2_sizes, df1size):
     def generate_data(df2size):
@@ -61,8 +62,8 @@ def plot_hash_vs_merge(df2_sizes, df1size):
         xlabel="Number of rows in df2",
         title=f"Hash Join vs Merge Join Performance dfsize1 = {df1size} ",
         equality_check=False,
-        filename=f"perfplot_df1_{df1size}.png"
+        filename=f"hash_vs_merge_df1_{df1size}.png"
     )
 
-for df1size in df1_sizes:
+for df1size in [1_000]:
     plot_hash_vs_merge(df2_sizes, df1size)
