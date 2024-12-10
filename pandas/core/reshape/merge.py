@@ -1119,13 +1119,43 @@ class _MergePlan:
             print(k, v)
         self.merge_dataframes = new_dataframes
 
+    def _check_merge_plan(self, plan: list[str]) -> None:
+        """
+        Asserts that the merge plan has no cartesian products in it
+        """
+        predicate: _MergePredicate = None
+        seen_aliases: set[str] = {plan[0]}
+        for df in plan[1:]:
+            for seen_alias in seen_aliases:
+                predicate1 = self.merge_predicates.get((seen_alias, df), None)
+                predicate2 = self.merge_predicates.get((df, seen_alias), None)
+                if predicate1 is not None:
+                    predicate = predicate1
+                    break
+                if predicate2 is not None:
+                    predicate = predicate2
+                    break
+            assert predicate is not None, "plan has cartesian products!"
+            seen_aliases.add(df)
 
-    def execute_merge_plan(self) -> DataFrame:
+    def execute_merge_plan(self, optimize=True, manual_plan: list[str] | None = None) -> DataFrame:
+        """
+        Runs the merge plan with the dataframes
+        parameters:
+            optimize: keeps order of add_merge if false, optimizes otherwise
+            manual_plan: if not none, manually override merge order by passing a list of table aliases in the order
+                        of merge
+        """
         # print("dfs")
         # print(self.merge_dataframes)
         # print("preds")
         # print(self.merge_predicates)
-        self._optimize_merge()
+        if manual_plan is not None:
+            self._check_merge_plan(manual_plan)
+            init_order = {dataframe.alias: dataframe for dataframe in self.merge_dataframes}
+            self.merge_dataframes = [init_order[df] for df in manual_plan]
+        elif optimize:
+            self._optimize_merge()
         dataFrames: dict[str, DataFrame] = {}
         start_merge_df = self.merge_dataframes[0]
         start_merge_alias = start_merge_df.alias
@@ -1175,6 +1205,9 @@ class _MergePlan:
 
             print(left_alias)
             print(right_alias)
+
+            left_df = left_df.reset_index()
+            right_df = right_df.reset_index()
 
 
             op = _MergeOperation(
